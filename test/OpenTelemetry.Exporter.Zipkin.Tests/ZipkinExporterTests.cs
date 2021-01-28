@@ -22,6 +22,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text;
+using System.Threading;
 using OpenTelemetry.Exporter.Zipkin.Implementation;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Tests;
@@ -65,6 +66,11 @@ namespace OpenTelemetry.Exporter.Zipkin.Tests
                 context.Response.StatusCode = 200;
 
                 using StreamReader readStream = new StreamReader(context.Request.InputStream);
+
+                if (int.TryParse(context.Request.QueryString["delay"], out int delay))
+                {
+                    Thread.Sleep(delay);
+                }
 
                 string requestContent = readStream.ReadToEnd();
 
@@ -130,6 +136,32 @@ namespace OpenTelemetry.Exporter.Zipkin.Tests
             exportActivityProcessor.ForceFlush();
 
             Assert.Equal(1, endCalledCount);
+        }
+
+        [Fact]
+        public void TimeoutTest()
+        {
+            Guid requestId = Guid.NewGuid();
+
+            var exporter = new ZipkinExporter(new ZipkinExporterOptions
+            {
+                Endpoint = new Uri(
+                    $"http://{this.testServerHost}:{this.testServerPort}/api/v2/spans?requestId={requestId}&delay=30000"),
+            });
+            var processor = new BatchExportProcessor<Activity>(exporter, exporterTimeoutMilliseconds: 100);
+
+            var activity = CreateTestActivity();
+            processor.OnEnd(activity);
+
+            // exporterTimeoutMilliseconds is set to 100ms so this should be plenty of time to shutdown
+            var start = DateTime.UtcNow;
+            var success = processor.Shutdown(timeoutMilliseconds: 10000);
+            var end = DateTime.UtcNow;
+            Assert.True(success);
+            Assert.InRange((end - start).TotalMilliseconds, 90, 1000);
+
+            Assert.False(Responses.ContainsKey(requestId));
+
         }
 
         [Theory]
